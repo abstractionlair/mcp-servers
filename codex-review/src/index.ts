@@ -146,8 +146,11 @@ class CodexMCPServer {
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       // Timeout protection: kill process if it hangs (per Codex review)
-      const TIMEOUT_MS = 300000; // 5 minutes
+      // Allow override via environment variable
+      const TIMEOUT_MS = parseInt(process.env.CODEX_TIMEOUT_MS || "300000", 10); // Default 5 minutes
+      const SIGKILL_GRACE_MS = 2000; // 2 seconds grace before SIGKILL
       let timeoutId: NodeJS.Timeout | null = null;
+      let killTimeoutId: NodeJS.Timeout | null = null;
 
       // Don't pass prompt as argv - use stdin instead to avoid:
       // 1. Exposing sensitive content in process list
@@ -168,15 +171,42 @@ class CodexMCPServer {
         },
       });
 
-      // Set timeout to kill hung processes
+      // Set timeout to kill hung processes with SIGTERM → SIGKILL escalation
       timeoutId = setTimeout(() => {
         codex.kill("SIGTERM");
+
+        // Escalate to SIGKILL if process doesn't die
+        killTimeoutId = setTimeout(() => {
+          codex.kill("SIGKILL");
+        }, SIGKILL_GRACE_MS);
+
         reject(new Error(`Codex process timed out after ${TIMEOUT_MS}ms`));
       }, TIMEOUT_MS);
 
-      // Write prompt to stdin instead of passing as argument
-      codex.stdin.write(prompt);
-      codex.stdin.end();
+      // Guard against stdin write failures (process exited early, bad API key, etc.)
+      if (codex.stdin) {
+        codex.stdin.on("error", (err) => {
+          // Convert stream errors to rejected promise instead of crashing
+          if (timeoutId) clearTimeout(timeoutId);
+          if (killTimeoutId) clearTimeout(killTimeoutId);
+          reject(new Error(`Failed to write to codex stdin: ${err.message}`));
+        });
+
+        // Write prompt to stdin instead of passing as argument
+        try {
+          codex.stdin.write(prompt);
+          codex.stdin.end();
+        } catch (err) {
+          if (timeoutId) clearTimeout(timeoutId);
+          if (killTimeoutId) clearTimeout(killTimeoutId);
+          reject(new Error(`Failed to write prompt: ${err instanceof Error ? err.message : String(err)}`));
+          return;
+        }
+      } else {
+        if (timeoutId) clearTimeout(timeoutId);
+        reject(new Error("Codex stdin is not available"));
+        return;
+      }
 
       let stdout = "";
       let stderr = "";
@@ -191,6 +221,7 @@ class CodexMCPServer {
 
       codex.on("close", (code) => {
         if (timeoutId) clearTimeout(timeoutId);
+        if (killTimeoutId) clearTimeout(killTimeoutId);
 
         if (code === 0) {
           // Log stderr even on success for debugging (per Codex review)
@@ -205,6 +236,7 @@ class CodexMCPServer {
 
       codex.on("error", (err) => {
         if (timeoutId) clearTimeout(timeoutId);
+        if (killTimeoutId) clearTimeout(killTimeoutId);
         reject(new Error(`Failed to spawn codex: ${err.message}`));
       });
     });
