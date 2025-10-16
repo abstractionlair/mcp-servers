@@ -145,14 +145,20 @@ class CodexMCPServer {
     reasoning_effort: string
   ): Promise<string> {
     return new Promise((resolve, reject) => {
+      // Timeout protection: kill process if it hangs (per Codex review)
+      const TIMEOUT_MS = 300000; // 5 minutes
+      let timeoutId: NodeJS.Timeout | null = null;
+
+      // Don't pass prompt as argv - use stdin instead to avoid:
+      // 1. Exposing sensitive content in process list
+      // 2. Hitting OS argv size limits (~128KB)
       const args = [
         "exec",
         "--full-auto",
         "-m",
         model,
         "-c",
-        `model_reasoning_effort="${reasoning_effort}"`,
-        prompt,
+        `model_reasoning_effort=${reasoning_effort}`, // Remove quotes per Codex review
       ];
 
       const codex = spawn("codex", args, {
@@ -161,6 +167,16 @@ class CodexMCPServer {
           OPENAI_API_KEY: this.apiKey,
         },
       });
+
+      // Set timeout to kill hung processes
+      timeoutId = setTimeout(() => {
+        codex.kill("SIGTERM");
+        reject(new Error(`Codex process timed out after ${TIMEOUT_MS}ms`));
+      }, TIMEOUT_MS);
+
+      // Write prompt to stdin instead of passing as argument
+      codex.stdin.write(prompt);
+      codex.stdin.end();
 
       let stdout = "";
       let stderr = "";
@@ -174,7 +190,13 @@ class CodexMCPServer {
       });
 
       codex.on("close", (code) => {
+        if (timeoutId) clearTimeout(timeoutId);
+
         if (code === 0) {
+          // Log stderr even on success for debugging (per Codex review)
+          if (stderr) {
+            console.error("Codex stderr:", stderr);
+          }
           resolve(stdout);
         } else {
           reject(new Error(`Codex exited with code ${code}:\n${stderr}`));
@@ -182,6 +204,7 @@ class CodexMCPServer {
       });
 
       codex.on("error", (err) => {
+        if (timeoutId) clearTimeout(timeoutId);
         reject(new Error(`Failed to spawn codex: ${err.message}`));
       });
     });
