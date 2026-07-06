@@ -1,0 +1,229 @@
+#!/bin/bash
+# Pre-push hook: MANDATORY Codex review before pushing
+# 
+# This hook BLOCKS push until Codex review is completed and approved.
+# The only way to skip: git push --no-verify (use sparingly!)
+#
+# Installation: 
+#   cp .git-hooks/pre-push .git/hooks/pre-push
+#   chmod +x .git/hooks/pre-push
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+echo ""
+echo "${BLUE}═══════════════════════════════════════════════════${NC}"
+echo "${BLUE}           MANDATORY CODEX REVIEW                   ${NC}"
+echo "${BLUE}═══════════════════════════════════════════════════${NC}"
+echo ""
+
+# Get the remote and branch being pushed to
+remote="$1"
+url="$2"
+
+# Get current branch
+current_branch=$(git symbolic-ref --short HEAD)
+
+# Get the tracking branch (what we're comparing against)
+tracking_branch=$(git for-each-ref --format='%(upstream:short)' "refs/heads/$current_branch")
+
+# If no tracking branch, compare with origin/main
+if [ -z "$tracking_branch" ]; then
+    tracking_branch="origin/main"
+fi
+
+# Check if there are any changes to review
+if ! git diff --quiet "$tracking_branch...HEAD" 2>/dev/null; then
+    echo "${YELLOW}📋 Changes detected between $current_branch and $tracking_branch${NC}"
+    echo ""
+    
+    # Get the diff
+    diff_output=$(git diff "$tracking_branch...HEAD")
+    
+    # Get list of changed files
+    changed_files=$(git diff --name-only "$tracking_branch...HEAD")
+    
+    echo "Files changed:"
+    echo "$changed_files" | sed 's/^/  - /'
+    echo ""
+    
+    # Check if AGENTS.md exists in repo
+    if [ -f "AGENTS.md" ]; then
+        agent_file_arg="--agent-file AGENTS.md"
+        echo "${GREEN}✓${NC} Found AGENTS.md for review context"
+    else
+        agent_file_arg=""
+        echo "${YELLOW}⚠${NC}  No AGENTS.md found (review without context)"
+    fi
+    echo ""
+    
+    # Check if codex command exists
+    if ! command -v codex &> /dev/null; then
+        echo "${RED}✗ FATAL: 'codex' command not found${NC}"
+        echo ""
+        echo "Codex review is REQUIRED but codex CLI is not installed."
+        echo ""
+        echo "Options:"
+        echo "  1. Install codex CLI"
+        echo "  2. Skip review with: git push --no-verify (NOT RECOMMENDED)"
+        echo ""
+        exit 1
+    fi
+    
+    echo "${YELLOW}🔍 Requesting Codex review...${NC}"
+    echo ""
+    
+    # Create review request
+    review_request=$(cat <<EOF
+# PRE-PUSH CODE REVIEW
+
+## Branch: $current_branch → $tracking_branch
+
+## Files Changed:
+$changed_files
+
+## Full Diff:
+\`\`\`diff
+$diff_output
+\`\`\`
+
+---
+
+## Review Instructions:
+
+This is a **mandatory pre-push review**. Please provide a thorough review checking for:
+
+1. **Contract Violations**: Does code violate any MUST/MUST NOT/INVARIANTS?
+2. **Security Issues**: Path traversal, injection, auth bypass, etc.
+3. **Obvious Bugs**: Logic errors, off-by-one, null derefs, etc.
+4. **Code Quality**: Major style violations, unclear code, missing docs
+
+**IMPORTANT**: At the end of your review, you MUST include one of:
+
+- \`APPROVED: No blocking issues found\` - Push will proceed
+- \`BLOCKED: Critical issues must be fixed\` - Push will be rejected
+
+If you find issues but they're not blocking, still use APPROVED and list them as suggestions.
+EOF
+)
+    
+    # Save review request to temp file
+    review_file=$(mktemp)
+    echo "$review_request" > "$review_file"
+    
+    # Run review with timeout
+    review_response=$(mktemp)
+    
+    if timeout 120s codex exec $agent_file_arg -m gpt-5-codex < "$review_file" > "$review_response" 2>&1; then
+        echo "${GREEN}✅ Codex review completed${NC}"
+        echo ""
+        echo "${BLUE}═══════════════════════════════════════════════════${NC}"
+        echo "${BLUE}                 REVIEW RESPONSE                    ${NC}"
+        echo "${BLUE}═══════════════════════════════════════════════════${NC}"
+        echo ""
+        cat "$review_response"
+        echo ""
+        echo "${BLUE}═══════════════════════════════════════════════════${NC}"
+        echo ""
+        
+        # Check for explicit approval or blocking
+        if grep -qi "APPROVED:" "$review_response"; then
+            echo "${GREEN}✅ APPROVED: Codex approved the changes${NC}"
+            echo ""
+            
+            # Save review to archive if directory exists
+            if [ -d "reviews/pre-push" ]; then
+                review_archive="reviews/pre-push/$(date +%Y%m%d_%H%M%S)_${current_branch}_APPROVED.md"
+                cat "$review_file" > "$review_archive"
+                echo "" >> "$review_archive"
+                echo "---" >> "$review_archive"
+                echo "" >> "$review_archive"
+                cat "$review_response" >> "$review_archive"
+                echo "${BLUE}ℹ${NC}  Review saved to $review_archive"
+            fi
+            
+            rm "$review_file" "$review_response"
+            exit 0
+            
+        elif grep -qi "BLOCKED:" "$review_response"; then
+            echo "${RED}✗ BLOCKED: Codex found critical issues${NC}"
+            echo ""
+            echo "You must fix the issues before pushing."
+            echo ""
+            echo "Options:"
+            echo "  1. Fix the issues and try again"
+            echo "  2. Skip review with: git push --no-verify (NOT RECOMMENDED)"
+            echo ""
+            
+            # Save review to archive if directory exists
+            if [ -d "reviews/pre-push" ]; then
+                review_archive="reviews/pre-push/$(date +%Y%m%d_%H%M%S)_${current_branch}_BLOCKED.md"
+                cat "$review_file" > "$review_archive"
+                echo "" >> "$review_archive"
+                echo "---" >> "$review_archive"
+                echo "" >> "$review_archive"
+                cat "$review_response" >> "$review_archive"
+                echo "${BLUE}ℹ${NC}  Review saved to $review_archive"
+            fi
+            
+            rm "$review_file" "$review_response"
+            exit 1
+            
+        else
+            echo "${YELLOW}⚠  WARNING: Review missing explicit APPROVED/BLOCKED status${NC}"
+            echo ""
+            echo "Codex review completed but did not include explicit approval."
+            echo "This usually means the review format is incorrect."
+            echo ""
+            echo "Treating as BLOCKED for safety."
+            echo ""
+            echo "Options:"
+            echo "  1. Check review response above"
+            echo "  2. Try push again"
+            echo "  3. Skip review with: git push --no-verify (NOT RECOMMENDED)"
+            echo ""
+            
+            rm "$review_file" "$review_response"
+            exit 1
+        fi
+        
+    else
+        exit_code=$?
+        echo "${RED}✗ FATAL: Codex review failed or timed out${NC}"
+        echo ""
+        
+        if [ $exit_code -eq 124 ]; then
+            echo "Review timed out after 120 seconds."
+        else
+            echo "Review command failed with exit code: $exit_code"
+        fi
+        
+        echo ""
+        echo "Cannot push without review."
+        echo ""
+        echo "Options:"
+        echo "  1. Check codex CLI is working: codex --version"
+        echo "  2. Try push again"
+        echo "  3. Skip review with: git push --no-verify (NOT RECOMMENDED)"
+        echo ""
+        
+        rm "$review_file"
+        if [ -f "$review_response" ]; then
+            rm "$review_response"
+        fi
+        exit 1
+    fi
+else
+    echo "${GREEN}✓ No changes to review (already pushed)${NC}"
+    echo ""
+fi
+
+echo "${GREEN}✅ Pre-push checks complete${NC}"
+echo ""
+exit 0

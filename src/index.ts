@@ -17,7 +17,7 @@ interface CodexReviewArgs {
   model?: string;
 }
 
-class CodexMCPServer {
+export class CodexMCPServer {
   private server: Server;
   private apiKey: string;
 

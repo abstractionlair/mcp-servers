@@ -13,7 +13,6 @@ MCP server that provides access to GPT-5 Codex for methodology reviews during au
 ## Installation
 
 ```bash
-cd codex-review
 npm install
 npm run build
 ```
@@ -27,7 +26,7 @@ Add to `~/.config/claude-code/mcp.json`:
   "mcpServers": {
     "codex": {
       "command": "node",
-      "args": ["/Users/YOUR_USERNAME/mcp-servers/mcp-servers/codex-review/build/index.js"],
+      "args": ["/Users/YOUR_USERNAME/mcp-servers/build/index.js"],
       "env": {
         "OPENAI_API_KEY": "sk-proj-..."
       }
@@ -45,7 +44,7 @@ Add to `~/.config/claude-code/mcp.json`:
       "command": "bash",
       "args": [
         "-c",
-        "source ~/.env && node /Users/YOUR_USERNAME/mcp-servers/mcp-servers/codex-review/build/index.js"
+        "source ~/.env && node /Users/YOUR_USERNAME/mcp-servers/build/index.js"
       ]
     }
   }
@@ -83,6 +82,29 @@ GO / NO-GO for starting SFT training?`,
 - Node.js 18+
 - `codex` CLI installed and in PATH
 - OpenAI API key with Codex access
+
+## AI-Reviewer as an Enforced Pre-Push Gate
+
+The Codex review can be enforced as a mandatory pre-push gate. The included hook runs a Codex review on your branch diff, parses the `APPROVED:`/`BLOCKED:` verdict, and fails closed (push is rejected unless review approves).
+
+### Install the hook
+
+```bash
+cp hooks/pre-push .git/hooks/pre-push
+chmod +x .git/hooks/pre-push
+```
+
+### How it works
+
+1. On `git push`, the hook computes the diff between your branch and its tracking branch.
+2. It feeds the diff to `codex exec` with review instructions.
+3. The response is scanned for `APPROVED:` or `BLOCKED:`.
+   - **APPROVED** — push proceeds.
+   - **BLOCKED** — push is rejected; fix the issues and retry.
+   - **No verdict** — treated as BLOCKED (fails closed for safety).
+4. Reviews are archived to `reviews/pre-push/` if the directory exists.
+
+To bypass (not recommended): `git push --no-verify`.
 
 ## Development
 
