@@ -4,7 +4,7 @@ MCP server that provides access to GPT-5 Codex for methodology reviews during au
 
 ## Features
 
-- **Tool**: `mcp__codex_review` - Request Codex methodology reviews
+- **Tool**: `mcp__codex__codex_review` - Request Codex methodology reviews
 - Configurable reasoning effort (low/medium/high)
 - Optional output file saving
 - Handles API key management
@@ -53,11 +53,12 @@ Add to `~/.config/claude-code/mcp.json`:
 
 ## Usage in Claude Code
 
-Once configured, Claude Code will have access to the `mcp__codex_review` tool:
+Once configured, Claude Code will have access to the `mcp__codex__codex_review` tool
+(the name combines the server key from `mcp.json` — `codex` — with the tool name `codex_review`):
 
 ```javascript
 // Claude Code can call this automatically
-mcp__codex_review({
+mcp__codex__codex_review({
   prompt: `# CODEX REVIEW REQUEST: Stage 1 SFT Training Gate
 
 ## Context
@@ -98,9 +99,10 @@ chmod +x .git/hooks/pre-push
 
 1. On `git push`, the hook computes the diff between your branch and its tracking branch.
 2. It feeds the diff to `codex exec` with review instructions.
-3. The response is scanned for `APPROVED:` or `BLOCKED:`.
+3. The response is scanned for `APPROVED:` or `BLOCKED:` at the start of a line.
    - **APPROVED** — push proceeds.
-   - **BLOCKED** — push is rejected; fix the issues and retry.
+   - **BLOCKED** — push is rejected; fix the issues and retry. If both markers
+     appear, BLOCKED wins.
    - **No verdict** — treated as BLOCKED (fails closed for safety).
 4. Reviews are archived to `reviews/pre-push/` if the directory exists.
 
@@ -114,6 +116,12 @@ npm run watch
 
 # Build for production
 npm run build
+
+# Run the server tests
+npm test
+
+# Test the pre-push hook's verdict parsing (fail-closed contract)
+hooks/pre-push.test.sh
 ```
 
 ## License

@@ -230,7 +230,15 @@ export class CodexMCPServer {
           }
           resolve(stdout);
         } else {
-          reject(new Error(`Codex exited with code ${code}:\n${stderr}`));
+          // Report both streams: codex may emit useful diagnostics or
+          // partial output on stdout before failing.
+          const details = [
+            stderr ? `stderr:\n${stderr}` : "",
+            stdout ? `stdout:\n${stdout}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n");
+          reject(new Error(`Codex exited with code ${code}:\n${details}`));
         }
       });
 
