@@ -4,8 +4,8 @@
 # This hook BLOCKS push until Codex review is completed and approved.
 # The only way to skip: git push --no-verify (use sparingly!)
 #
-# Installation: 
-#   cp .git-hooks/pre-push .git/hooks/pre-push
+# Installation:
+#   cp hooks/pre-push .git/hooks/pre-push
 #   chmod +x .git/hooks/pre-push
 
 set -e
@@ -53,12 +53,11 @@ if ! git diff --quiet "$tracking_branch...HEAD" 2>/dev/null; then
     echo "$changed_files" | sed 's/^/  - /'
     echo ""
     
-    # Check if AGENTS.md exists in repo
+    # Note: codex reads AGENTS.md from the working directory natively;
+    # no CLI flag is needed (and current codex CLI rejects --agent-file).
     if [ -f "AGENTS.md" ]; then
-        agent_file_arg="--agent-file AGENTS.md"
-        echo "${GREEN}✓${NC} Found AGENTS.md for review context"
+        echo "${GREEN}✓${NC} Found AGENTS.md (codex picks it up automatically)"
     else
-        agent_file_arg=""
         echo "${YELLOW}⚠${NC}  No AGENTS.md found (review without context)"
     fi
     echo ""
@@ -120,7 +119,7 @@ EOF
     # Run review with timeout
     review_response=$(mktemp)
     
-    if timeout 120s codex exec $agent_file_arg -m gpt-5-codex < "$review_file" > "$review_response" 2>&1; then
+    if timeout 120s codex exec -m gpt-5-codex < "$review_file" > "$review_response" 2>&1; then
         echo "${GREEN}✅ Codex review completed${NC}"
         echo ""
         echo "${BLUE}═══════════════════════════════════════════════════${NC}"
@@ -132,26 +131,12 @@ EOF
         echo "${BLUE}═══════════════════════════════════════════════════${NC}"
         echo ""
         
-        # Check for explicit approval or blocking
-        if grep -qi "APPROVED:" "$review_response"; then
-            echo "${GREEN}✅ APPROVED: Codex approved the changes${NC}"
-            echo ""
-            
-            # Save review to archive if directory exists
-            if [ -d "reviews/pre-push" ]; then
-                review_archive="reviews/pre-push/$(date +%Y%m%d_%H%M%S)_${current_branch}_APPROVED.md"
-                cat "$review_file" > "$review_archive"
-                echo "" >> "$review_archive"
-                echo "---" >> "$review_archive"
-                echo "" >> "$review_archive"
-                cat "$review_response" >> "$review_archive"
-                echo "${BLUE}ℹ${NC}  Review saved to $review_archive"
-            fi
-            
-            rm "$review_file" "$review_response"
-            exit 0
-            
-        elif grep -qi "BLOCKED:" "$review_response"; then
+        # Check for explicit approval or blocking.
+        # Order matters: BLOCKED must win over APPROVED so a response
+        # containing both markers can never approve a push (fail closed).
+        # Markers are anchored to the start of a line so quoted
+        # instructions (or "NOT APPROVED:") don't count as a verdict.
+        if grep -qi "^BLOCKED:" "$review_response"; then
             echo "${RED}✗ BLOCKED: Codex found critical issues${NC}"
             echo ""
             echo "You must fix the issues before pushing."
@@ -171,10 +156,28 @@ EOF
                 cat "$review_response" >> "$review_archive"
                 echo "${BLUE}ℹ${NC}  Review saved to $review_archive"
             fi
-            
+
             rm "$review_file" "$review_response"
             exit 1
-            
+
+        elif grep -qi "^APPROVED:" "$review_response"; then
+            echo "${GREEN}✅ APPROVED: Codex approved the changes${NC}"
+            echo ""
+
+            # Save review to archive if directory exists
+            if [ -d "reviews/pre-push" ]; then
+                review_archive="reviews/pre-push/$(date +%Y%m%d_%H%M%S)_${current_branch}_APPROVED.md"
+                cat "$review_file" > "$review_archive"
+                echo "" >> "$review_archive"
+                echo "---" >> "$review_archive"
+                echo "" >> "$review_archive"
+                cat "$review_response" >> "$review_archive"
+                echo "${BLUE}ℹ${NC}  Review saved to $review_archive"
+            fi
+
+            rm "$review_file" "$review_response"
+            exit 0
+
         else
             echo "${YELLOW}⚠  WARNING: Review missing explicit APPROVED/BLOCKED status${NC}"
             echo ""
